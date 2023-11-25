@@ -1,43 +1,45 @@
 package com.example.Mockito.service;
 
+import com.example.Mockito.exception.BussinessException;
 import com.example.Mockito.model.DictonaryResponse;
 import com.example.Mockito.util.CustomLogger;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
-
-import java.lang.reflect.Array;
 
 @Service
 public class DictonaryService {
+
+    ObjectMapper mapper;
+
+    @Autowired
+    public DictonaryService(ObjectMapper mapper){
+        this.mapper = mapper;
+    }
 
     String method_Name = "";
     String className =  DictonaryService.class.getName();
 
     CustomLogger log = new CustomLogger(DictonaryService.class);
 
-
     RestTemplate restTemplate = new RestTemplate();
-    ResponseEntity<Object> responseEntity = null;
-    ResponseEntity<DictonaryResponse[]> responseEntity2 = null;
-    public Object getDetails(String word) {
+    ResponseEntity<DictonaryResponse[]> responseEntity = null;
+    public DictonaryResponse[] getDetails(String word) throws BussinessException {
 
-        method_Name = "getDetail";
-        log.info(className,method_Name,"---Request Processing--","Word Received for process : "+word);
-
-            responseEntity = restTemplate.exchange("https://api.dictionaryapi.dev/api/v2/entries/en/" + word, HttpMethod.GET, null, Object.class);
-            log.info(className, method_Name, "First Call completed",null);
-            responseEntity2 = restTemplate.exchange("https://api.dictionaryapi.dev/api/v2/entries/en/" + word, HttpMethod.GET, null, DictonaryResponse[].class);
-            log.info(className, method_Name, "Response received 2: ", responseEntity2.getBody());
-            log.info(className, method_Name, "Response received: {}", responseEntity);
-        System.out.println("Response Entity Object : "+responseEntity);
-        System.out.println("Response Entity DictonaryResponse : "+responseEntity2.getBody()[0]);
-        ObjectMapper mapper = new ObjectMapper();
-        DictonaryResponse[] dictonaryResponse = mapper.convertValue(responseEntity2.getBody(),DictonaryResponse[].class);
-        log.info(className, method_Name,"Dictonary response get word : {}",dictonaryResponse[0].getWord());
-        return responseEntity.getBody();
+            method_Name = "getDetail";
+            try {
+                log.info(className, method_Name, "---Request Processing--", "Word Received for process : " + word);
+                responseEntity = restTemplate.exchange("https://api.dictionaryapi.dev/api/v2/entries/en/" + word, HttpMethod.GET, null, DictonaryResponse[].class);
+                log.info(className, method_Name, "---Response Processing--- ", responseEntity.getBody());
+                return mapper.convertValue(responseEntity.getBody(), DictonaryResponse[].class);
+            } catch (HttpClientErrorException exception){
+                log.exception("Exception Caught : ",exception, exception.getStatusText(), exception.getResponseBodyAsString());
+                throw new BussinessException(exception.getStatusCode().toString(),exception.getStatusText(),exception.getResponseBodyAsString());
+            }
     }
 
 }
