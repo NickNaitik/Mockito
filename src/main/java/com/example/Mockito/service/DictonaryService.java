@@ -4,6 +4,7 @@ import com.example.Mockito.exception.BussinessException;
 import com.example.Mockito.model.DictonaryResponse;
 import com.example.Mockito.util.CustomLogger;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
@@ -38,7 +39,15 @@ public class DictonaryService {
                 return mapper.convertValue(responseEntity.getBody(), DictonaryResponse[].class);
             } catch (HttpClientErrorException exception){
                 log.exception("Exception Caught : ",exception, exception.getStatusText(), exception.getResponseBodyAsString());
-                throw new BussinessException(exception.getStatusCode().toString(),exception.getStatusText(),exception.getResponseBodyAsString());
+
+                // Parse the JSON string
+                JSONObject jsonObject = new JSONObject(exception.getResponseBodyAsString());
+
+                // Access values using keys
+                String title = jsonObject.getString("title");
+                String message = jsonObject.getString("message");
+                String resolution = jsonObject.getString("resolution");
+                throw new BussinessException("400",message,resolution);
             }
     }
 
