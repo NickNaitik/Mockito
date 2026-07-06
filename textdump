@@ -1,4 +1,277 @@
-PSC way without VPC peering  That is awesome news! Confirming that direct VPC peering works means your core network routing is solid.
+——— NORTH BOUND —————   PSC-ENDPOINT Creation  Get the service attachment   nick@Naitiks-MacBook-Air ~ % curl -i -X GET -H "Authorization: Bearer $AUTH" \
+    "https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/instances"  Then   https://docs.cloud.google.com/vpc/docs/configure-private-service-connect-services#console   CONNECT VIA VM  curl -k -v -H "Host: nick-naitik-2000.dns-replaceme.example.com" \
+  https://10.3.1.226/hello-world   CREATE TUNNEL  gcloud compute ssh my-mumbai-vm \
+  --zone=asia-south1-a \
+  --project=$PROJECT_ID \
+  -- -L 8443:10.3.1.226:443 -N  In new terminal
+
+curl -k -v -H "Host: nick-naitik-2000.dns-replaceme.example.com" \
+  https://localhost:8443/hello-world    Commands Run for External Traffic via PSC   1. GET SERVICE ATTACHMENT VALUE   curl -i -X GET -H "$AUTH" \
+  "https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/instances"
+
+1. CREATE A PSC NEG  gcloud compute network-endpoint-groups create psc-nb-neg \           
+        --network-endpoint-type=private-service-connect \
+        --psc-target-service=projects/b4c638e02e5f94fd2-tp/regions/asia-south1/serviceAttachments/apigee-asia-south1-x9e4 \ 
+        --region=$RUNTIME_LOCATION \
+        --network=$NETWORK_NAME \
+        --subnet=subnet-mumbai-nick \
+         --project=$PROJECT_ID 
+4. Reserve a GLOBAL IP FOR LB  gcloud compute addresses create ex-lb-address \
+        -ip-version=IPV4 --global --project=$PROJECT_ID 
+5. View Reserver IP  gcloud compute addresses describe ex-lb-address \
+        --format="get(address)" --global --project=$PROJECT_ID 
+6. Create a Backend Service for NEG  gcloud compute backend-services create apigee-runtime \
+       --load-balancing-scheme=EXTERNAL_MANAGED \         --protocol=HTTPS \
+       --global --project=$PROJECT_ID 
+7. Add the NEG to Backend service  gcloud compute backend-services add-backend apigee-runtime \
+        --network-endpoint-group=psc-nb-neg \         --network-endpoint-group-region=$RUNTIME_LOCATION \
+        --global --project=$PROJECT_ID 
+8. Create a map for the LB gcloud compute url-maps create apigge-elb-map \
+	--default-service=apigee-runtime \ 	--global --project=$PROJECT_ID 
+9. Create the cert   gcloud compute ssl-certificates create apigee-gm-crt \
+        --domains 136.69.54.80.sslip.io --project=$PROJECT_ID 
+10. STATUS command cert creation it can take hour or it will check the real hit   gcloud compute ssl-certificates describe apigee-gm-crt \
+ 	--global \ 	--format="get(name,managed.status, managed.Status)" 
+11.  Add the domain to the Apigee environment group that was created for you. The name of the environment group is eval-group  curl "https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/envgroups/eval-group" \
+       -H "$AUTH" \
+      -X PATCH \
+      -H "Content-Type:application/json" \
+      -d '{
+      "hostnames":["'"136.69.54.80.sslip.io"'"]       }' 
+12. Check the status of the environment group operation  curl -H "$AUTH" \  "https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/envgroups/eval-group/attachments" 
+13. Use the SSL certificate resource to create a target HTTPS proxy.  gcloud compute target-https-proxies create apigee-target-proxy \
+      -url-map=apigge-elb-map \       --ssl-certificates=apigee-gm-crt --project=$PROJECT_ID
+ 14. Create the forward rule  gcloud compute forwarding-rules create apigee-fwd-rule \
+  --load-balancing-scheme=EXTERNAL_MANAGED \
+  --network-tier=PREMIUM \
+  --address=ex-lb-address \
+  --target-https-proxy=apigee-target-proxy \
+  --ports=443 \
+  --global --project=$PROJECT_ID
+ 15. Hit this request - https://136.69.54.80.sslip.io/hello-world  16. ENV GROUP HOSTNAME SHOULD UPDATE  HOW TO GET ENV -  export ENV_GROUP_HOSTNAME=$(curl -H "$AUTH" https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/envgroups -s | jq -r '.environmentGroups[0].hostnames[0]')  nick@Naitiks-MacBook-Air GCP % echo $ENV_GROUP_HOSTNAME
+136.69.54.80.sslip.io
+
+
+
+North-bound with MIG & ELB
+  MIG CREATION LOGS ———  nick@Naitiks-MacBook-Air ~ % MIG_NAME=apigee-mig-nb  
+VPC_NAME=nick-naitik-vpc 
+VPC_SUBNET=subnet-mumbai-nick  
+REGION=asia-south1 
+APIGEE_ENDPOINT=10.3.1.226 
+
+nick@Naitiks-MacBook-Air ~ % export AUTH="$(gcloud auth print-access-token)"
+export PROJECT_ID="nick-naitik-2000"
+export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+export RUNTIME_LOCATION="asia-south1"  
+nick@Naitiks-MacBook-Air ~ % echo $PROJECT_ID
+nick-naitik-2000 
+nick@Naitiks-MacBook-Air ~ % echo$AUTH
+zsh: file name too long: echoya29.a0AT3oNZ-pJwwaab6-xGGRPMolsA36WUQy1PJS-oF7p_v55z-iMZQ80GVFPRV_TaiqfJFB0TpnNMtiomT5-3MUao6hafDPsACKE3fUOAJcSSdMvS7Z0I-qurfdCiWLEwaMw5ZZHor5NxHXe9QloSPS3DqX1jvAOZTIH-NaHm_5taJiDI9fMKhOY-GXtNh7bfpLAUrDyIxey96V4AaCgYKATMSARMSFQHGX2MinTLK7iaBgbCYVxElQ6ICOA0213  
+nick@Naitiks-MacBook-Air ~ % gcloud compute instance-templates create $MIG_NAME \
+--project $PROJECT_ID \
+--region $REGION \
+--network $VPC_NAME \
+--subnet $VPC_SUBNET \
+--tags=https-server,apigee-mig-proxy,gke-apigee-proxy \
+--machine-type e2-medium --image-family debian-12 \
+--image-project debian-cloud --boot-disk-size 10GB \
+--no-address \
+--metadata ENDPOINT=$APIGEE_ENDPOINT,startup-script-url=gs://apigee-5g-saas/apigee-envoy-proxy-release/latest/conf/startup-script.sh
+WARNING: You have selected a disk size of under [200GB]. This may result in poor I/O performance. For more information, see: https://developers.google.com/compute/docs/disks#performance.
+Created [https://www.googleapis.com/compute/v1/projects/nick-naitik-2000/global/instanceTemplates/apigee-mig-nb].
+NAME: apigee-mig-nb
+MACHINE_TYPE: e2-medium
+PREEMPTIBLE: 
+CREATION_TIMESTAMP: 2026-07-05T01:52:52.400-07:00
+
+
+Updates are available for some Google Cloud CLI components.  To install them,
+please run:
+  $ gcloud components update
+
+nick@Naitiks-MacBook-Air ~ % gcloud compute instance-groups managed create $MIG_NAME \
+--project $PROJECT_ID --base-instance-name apigee-mig \
+--size 2 --template $MIG_NAME --region $REGION
+Created [https://www.googleapis.com/compute/v1/projects/nick-naitik-2000/regions/asia-south1/instanceGroupManagers/apigee-mig-nb].
+NAME: apigee-mig-nb
+LOCATION: asia-south1
+SCOPE: region
+BASE_INSTANCE_NAME: apigee-mig
+SIZE: 0
+TARGET_SIZE: 2
+INSTANCE_TEMPLATE: apigee-mig-nb
+AUTOSCALED: no   END ———  Defined a named port   gcloud compute instance-groups managed set-named-ports $MIG_NAME \
+--project $PROJECT_ID --region $REGION --named-ports https:443
+ Create health check for mig  nick@Naitiks-MacBook-Air ~ % gcloud compute health-checks create https mig-health-check \
+--project $PROJECT_ID --port 443 --global \
+--request-path /healthz/ingress
+Created [https://www.googleapis.com/compute/v1/projects/nick-naitik-2000/global/healthChecks/mig-health-check].
+NAME: mig-health-check
+PROTOCOL: HTTPS   Create backend Service  nick@Naitiks-MacBook-Air ~ % gcloud compute backend-services create apigee-mig \--project $PROJECT_ID \
+--protocol HTTPS \
+--health-checks mig-health-check \
+--port-name https \
+--timeout 302s \
+--connection-draining-timeout 300s \
+--global
+Created [https://www.googleapis.com/compute/v1/projects/nick-naitik-2000/global/backendServices/apigee-mig].
+NAME: apigee-mig
+BACKENDS: 
+PROTOCOL: HTTPS  Add mig in backend
+
+nick@Naitiks-MacBook-Air ~ % gcloud compute backend-services add-backend apigee-mig \
+--project $PROJECT_ID --instance-group $MIG_NAME \
+--instance-group-region $REGION \
+--balancing-mode UTILIZATION --max-utilization 0.8 --global
+Updated [https://www.googleapis.com/compute/v1/projects/nick-naitik-2000/global/backendServices/apigee-mig].
+
+ Create LB URL MAP
+ nick@Naitiks-MacBook-Air ~ % gcloud compute url-maps create apigee-mig-elb-map \ 
+--project $PROJECT_ID --default-service apigee-mig
+Created [https://www.googleapis.com/compute/v1/projects/nick-naitik-2000/global/urlMaps/apigee-mig-elb-map].
+NAME: apigee-mig-elb-map
+DEFAULT_SERVICE: backendServices/apigee-mig 
+
+Reserve address for LB 
+
+nick@Naitiks-MacBook-Air ~ % gcloud compute addresses create ex-mig-lb-address \ 
+--project $PROJECT_ID \
+--ip-version=IPV4 \
+--global
+Created [https://www.googleapis.com/compute/v1/projects/nick-naitik-2000/global/addresses/ex-mig-lb-address].
+
+Get the LB reserved IP  gcloud compute addresses describe ex-mig-lb-address \
+--project $PROJECT_ID --format="get(address)" --global
+
+Create Cert
+
+gcloud compute ssl-certificates create apigee-new-gm-crt  --domains 8.233.207.50.sslip.io --project=$PROJECT_ID
+ Load balancing HTTPS Proxy
+
+ nick@Naitiks-MacBook-Air ~ % gcloud compute target-https-proxies create mig-apigee-proxy \
+--project $PROJECT_ID --url-map apigee-mig-elb-map \
+--ssl-certificates apigee-new-gm-crt    
+Created [https://www.googleapis.com/compute/v1/projects/nick-naitik-2000/global/targetHttpsProxies/mig-apigee-proxy].
+NAME: mig-apigee-proxy
+SSL_CERTIFICATES: apigee-new-gm-crt
+URL_MAP: apigee-mig-elb-map
+REGION: 
+CERTIFICATE_MAP: 
+
+ 
+Create forwarding rule 
+
+nick@Naitiks-MacBook-Air ~ % gcloud compute forwarding-rules create apigee-mig-forward-rule \
+--project $PROJECT_ID --address ex-mig-lb-address --global \
+--target-https-proxy mig-apigee-proxy --ports 443
+Created [https://www.googleapis.com/compute/v1/projects/nick-naitik-2000/global/forwardingRules/apigee-mig-forward-rule].    Create a firewall rule that lets the load balancer access the MIG by using the following command:
+
+nick@Naitiks-MacBook-Air ~ % gcloud compute firewall-rules create lb-mig-firewall \
+--description "Allow incoming from GLB on TCP port 443 to Apigee Proxy" \
+--project $PROJECT_ID --network $VPC_NAME --allow=tcp:443 \
+--source-ranges=130.211.0.0/22,35.191.0.0/16 --target-tags=gke-apigee-proxy
+Creating firewall...working..Created [https://www.googleapis.com/compute/v1/projects/nick-naitik-2000/global/firewalls/lb-mig-firewall].
+Creating firewall...done.                                                      
+NAME: lb-mig-firewall
+NETWORK: nick-naitik-vpc
+DIRECTION: INGRESS
+PRIORITY: 1000
+ALLOW: tcp:443
+DENY: 
+DISABLED: False  Note that the IP address ranges 130.211.0.0/22 and 35.191.0.0/16 are the source IP address ranges for Google Load Balancing. This firewall rule allows Google Cloud Load Balancing to make health check requests to the MIG.
+
+Add new hostname  nick@Naitiks-MacBook-Air ~ % curl "https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/envgroups/eval-group?updateMask=hostnames" \
+  -H "Authorization: Bearer $AUTH" \
+  -X PATCH \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hostnames": ["136.69.54.80.sslip.io", "8.233.207.50.sslip.io"]
+  }'
+{
+  "name": "organizations/nick-naitik-2000/operations/c013282c-2c37-4c45-aae8-fbf190d1dfd8",
+  "metadata": {
+    "@type": "type.googleapis.com/google.cloud.apigee.v1.OperationMetadata",
+    "operationType": "UPDATE",
+    "targetResourceName": "organizations/nick-naitik-2000/envgroups/eval-group",
+    "state": "FINISHED"
+  },
+  "done": true,
+  "response": {
+    "@type": "type.googleapis.com/google.cloud.apigee.v1.EnvironmentGroup",
+    "name": "eval-group",
+    "hostnames": [
+      "136.69.54.80.sslip.io",
+      "8.233.207.50.sslip.io"
+    ],
+    "createdAt": "1782551466454",
+    "lastModifiedAt": "1783247530643",
+    "state": "ACTIVE"
+  }
+}
+ UPDATED THE HOST LATER LATER  nick@Naitiks-MacBook-Air ~ % curl "https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/envgroups/eval-group?updateMask=hostnames" \
+  -H "Authorization: Bearer $AUTH" \
+  -X PATCH \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hostnames": ["136.69.54.80.sslip.io", "8.233.207.50.sslip.io", "nick-naitik-2000.dns-replaceme.example.com"]
+  }'
+{
+  "name": "organizations/nick-naitik-2000/operations/8914d098-2e7f-45e3-9474-e2a11075dceb",
+  "metadata": {
+    "@type": "type.googleapis.com/google.cloud.apigee.v1.OperationMetadata",
+    "operationType": "UPDATE",
+    "targetResourceName": "organizations/nick-naitik-2000/envgroups/eval-group",
+    "state": "FINISHED"
+  },
+  "done": true,
+  "response": {
+    "@type": "type.googleapis.com/google.cloud.apigee.v1.EnvironmentGroup",
+    "name": "eval-group",
+    "hostnames": [
+      "136.69.54.80.sslip.io",
+      "8.233.207.50.sslip.io",
+      "nick-naitik-2000.dns-replaceme.example.com"
+    ],
+    "createdAt": "1782551466454",
+    "lastModifiedAt": "1783265799074",
+    "state": "ACTIVE"
+  }
+}     
+BY default apogee cloud NAT
+
+TOKEN=$(gcloud auth print-access-token)
+
+nick@Naitiks-MacBook-Air ~ % curl -H "Authorization: Bearer $TOKEN" \
+"https://apigee.googleapis.com/v1/organizations/nick-naitik-2000/instances/eval-instance/natAddresses"
+{}
+  
+
+
+———- SOUTH BOUND ———-
+
+To privately connect Apigee to a backend target, you must create two entities: a service attachment in the VPC network where the target is deployed and an endpoint attachment in the Apigee VPC. These two entities allow Apigee to connect to the target service.
+
+In an Apigee organization, one endpoint attachment is allowed for a given service attachment. For example, assume you have 10 service attachments that expose target services. You can create 10 endpoint attachments in your Apigee organization, one for each service attachment.
+
+
+CHECKING SOUTHBOUND VPC PEERING
+
+Http service in VM
+
+sudo apt install nginx -y   # For Debian/Ubuntu
+# OR
+sudo yum install nginx -y   # For RHEL/CentOS/Rocky  
+sudo systemctl start nginx
+sudo systemctl enable nginx  curl http://localhost:80 - Test from VM, also from internet from External Ip
+
+Create a proxy and point to internal ip of the vm using http
+
+<HTTPTargetConnection>
+    <Properties/>
+    <URL>http://10.2.0.7</URL>
+  </HTTPTargetConnection>
+  PSC way without VPC peering  That is awesome news! Confirming that direct VPC peering works means your core network routing is solid.
 Switching over to Private Service Connect (PSC) via a Service Attachment and Endpoint Attachment changes how traffic flows. Instead of using standard routing over peering, Apigee will send traffic through a dedicated, unidirectional endpoint that maps directly to an Internal Load Balancer (ILB) inside your VPC.
 To test this path, you have to place your VM behind an Internal Load Balancer first, because you cannot hook a Service Attachment directly to a raw VM.
 Here is the exact step-by-step sequence to tear down the old path and set up the PSC architecture.
@@ -113,3 +386,5 @@ nick@Naitiks-MacBook-Air ~ % curl -H "Authorization: Bearer $TOKEN" \
     }
   ]
 }
+
+     
